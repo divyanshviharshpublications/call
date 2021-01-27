@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<title>Video Chat</title>
+
+	<style>
+		video {
+			width: 240px;
+			height: 180px;
+		}
+	</style>
+</head>
+<body>
+
+	<!-- me -->
+	<video id="myVideo" autoplay muted></video>
+	<form>
+		<input type="file" accept="image/*">
+	</form>
+
+	<!-- remote -->
+	<div id="remoteFile"></div>
+	<div id="remoteVideo"></div>
+
+
+	<script src="https://unpkg.com/peerjs@1.0.0/dist/peerjs.min.js"></script>
+	<script src="common.js"></script>
+	<script src="fileTransfer.js"></script>
+	<script>
+		var myStream;
+		/* if room name exists after getRoom(), it is a room owner */
+		var room;
+		var peer;
+		var remoteDataConn = [];
+		var remoteStreamCall = [];
+		var remoteStreamId = [];
+		var callerPeerId = [];
+
+		navigator.mediaDevices.getUserMedia({video: true, audio: true})
+		.then(function(stream) {
+			setupPeer(stream);
+		})
+		.catch(function(err) {
+			console.log('Failed to get local stream' ,err);
+			setupPeer();
+		});
+
+		function setupPeer(stream = undefined) {
+			console.log(`getting the stream`);
+			myStream = stream;
+			setupStream(myStream);
+
+			/* only start peer after getting the stream */
+			room = getRoom();
+			var peerOption = {debug: 1};
+			peer = room ? new Peer(room, peerOption) : new Peer(peerOption);
+
+			peer.on('open', (id) => {
+				console.log(`peer id ${id}`);
+
+				/* if peer id is not room id, it is the joining party, so need to call*/
+				if (!room) {
+					dataAndCall(getRoomName());
+				}
+			});
+
+			peer.on('connection', function(conn) {
+				setupDataConn(conn);
+			});
+
+			peer.on('call', function(call) {
+				console.log(`call receiving from ${call.metadata.peerId}...`);
+				call.answer(myStream);
+				setupCall(call);
+
+				/* if room owner and remoteDataConn already setup, room owner will sent connected peerId to its caller */
+				if (room) {
+					/* sent existing callerPeerId to the new caller to call that IDs */
+					remoteDataConn[remoteDataConn.length-1].send({
+						'callerPeerId': callerPeerId
+					});
+					callerPeerId.push(call.metadata.peerId);
+				}
+			});
+
+			peer.on('close', function() {
+				console.log(`peer is closing, so peer can no longer accept or create any new connections`);
+			});
+
+			peer.on('disconnected', function() {
+				console.log(`peer is disconnecting, but that peer can reconnect`);
+			});
+
+			peer.on('error', function(err) {
+				console.log(`error ${JSON.stringify(err)}`);
+			});
+		}
+
+		function dataAndCall(peerId) {
+			var conn = peer.connect(peerId);
+			conn.on('open', function(){
+				setupDataConn(conn);
+				conn.send('hi!');
+
+				/* calling should happen after connection setup finish */
+				console.log("calling...");
+				var call = peer.call(peerId, myStream, { metadata: { peerId: peer.id } });
+				setupCall(call);
+			});
+		}
+
+		function setupStream(stream) {
+			myVideo.srcObject = stream;
+		}
+
+		function setupDataConn(conn) {
+			console.log(`setupDataConn`);
+			remoteDataConn.push(conn);
+			conn.on('data', function(data){
+				console.log("connection data", data);
+
+
+				if (data) {
+
+					/* caller get data.callerPeerId data and then call to that peer */
+					if (data.callerPeerId && data.callerPeerId.length > 0) {
+						data.callerPeerId.forEach((callPeerId) => {
+							dataAndCall(callPeerId);
+						});
+					}
+
+					/* get the file transferring */
+					if (data.file && data.filename && data.filetype) {
+						var fileArea = document.getElementById('remoteFile');
+						console.log(`data`, data);
+						if (data.filetype == 'image/jpeg' || data.filetype == 'image/png') {
+							var bytes = new Uint8Array(data.file);
+							var img = document.createElement('img');
+							img.src = 'data:image/png;base64,' + byteToBase64(bytes);
+							img.width = 100;
+							fileArea.height = 75;
+							fileArea.appendChild(img);
+						} else {
+							var blob = new Blob([new Uint8Array(data.file)]);
+							var link = saveFile(blob, data.filename);
+							fileArea.appendChild(link);
+						}
+
+					}
+				}
+			});
+		}
+
+		function setupCall(call) {
+			console.log(`setupCall`);
+			call.on('stream', function(remoteStream) {
+
+				if (remoteStreamId.indexOf(remoteStream.id) == -1) {
+
+					/* save for call and stream id global variable */
+					remoteStreamCall.push(call);
+					remoteStreamId.push(remoteStream.id);
+
+					var videoArea = document.getElementById('remoteVideo');
+					var video = document.createElement('video');
+					var div = document.createElement('div');
+					div.style.float = 'left';
+					video.setAttribute('id', 'view-' + remoteStream.id);
+					video.width = 320;
+					video.height = 240;
+					video.autoplay = true;
+					video.srcObject = remoteStream;
+					div.appendChild(video);
+					videoArea.appendChild(div);
+				}
+			});
+		}
+
+	</script>
+</body>
+</html>
